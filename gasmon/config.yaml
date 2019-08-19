@@ -1,0 +1,18 @@
+run_time_seconds: 3600
+
+aws:
+    region_name: eu-west-1
+
+locations:
+    s3_bucket: samcap-07-2019-gasmon-locationss3bucket-14b07twikku90
+    s3_key: locations.json
+
+deduplicator:
+    cache_time_to_live_seconds: 300
+
+averager:
+    average_period_seconds: 60
+    expiry_time_seconds: 300
+
+receiver:
+    sns_topic_arn: arn:aws:sns:eu-west-1:552908040772:samcap-07-2019-gasmon-snsTopicSensorDataPart1-15WY99JMOTFSY
