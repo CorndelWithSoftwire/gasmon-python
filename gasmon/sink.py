@@ -3,7 +3,7 @@ A module consisting of sinks that the processed events will end up at.
 """
 
 from abc import abstractmethod, ABC
-from collections import deque, namedtuple
+from collections import defaultdict, deque, namedtuple
 from datetime import datetime
 import logging
 from time import time
@@ -46,18 +46,19 @@ class ParallelSink(Sink):
         """
         Handle the events by letting each sink process them.
         """
-        for sink in self.sinks:
-            sink.handle(events)
+        for event in events:
+            for sink in self.sinks:
+                sink.handle([event])
 
 
-class Averager(Sink):
+class ChronologicalAverager(Sink):
     """
     A Sink that produces a moving average of events in a given window.
     """
 
     def __init__(self, average_period_seconds, expiry_time_seconds):
         """
-        Create an Averager which will calculate a moving average over windows of width
+        Create an ChronologicalAverager which will calculate a moving average over windows of width
         `average_period_seconds`, under the assumption that events may arrive up to
         `expiry_time_seconds` late.
         """
@@ -68,7 +69,7 @@ class Averager(Sink):
 
         # Create buckets for calculating the moving averages
         current_time_millis = 1000 * time()
-        self.buckets = deque([AverageBucket(start=(current_time_millis - self.expiry_time_millis), end=(current_time_millis - self.expiry_time_millis + self.average_period_millis), values=[])])
+        self.buckets = deque([ChronologicalAverageBucket(start=(current_time_millis - self.expiry_time_millis), end=(current_time_millis - self.expiry_time_millis + self.average_period_millis), values=[])])
 
     def handle(self, events):
         """
@@ -96,7 +97,7 @@ class Averager(Sink):
         while self.buckets[-1].end < event.timestamp:
             current_last_start, current_last_end = self.buckets[-1].start, self.buckets[-1].end
             logger.debug(f'Adding new bucket to deal with event at timestamp {event.timestamp} (Current last bucket is {current_last_start} to {current_last_end})')
-            self.buckets.append(AverageBucket(start=current_last_end, end=(current_last_end + self.average_period_millis), values=[]))
+            self.buckets.append(ChronologicalAverageBucket(start=current_last_end, end=(current_last_end + self.average_period_millis), values=[]))
 
         # Find the right bucket and add the event value
         bucket_index = int(event.timestamp - self.buckets[0].start) // self.average_period_millis
@@ -108,7 +109,36 @@ class Averager(Sink):
             return self.buckets.popleft()
 
 
-class AverageBucket(namedtuple('AverageBucket', 'start end values')):
+class LocationAverager(Sink):
+    """
+    A Sink that produces the average values of events, grouped by location.
+    """
+
+    def __init__(self, observations_required):
+        """
+        Create a LocationAverager which will produce averages every time `observations_required`
+        events are handled.
+        """
+        self.averages = defaultdict(LocationAverage)
+        self.observations = 0
+        self.observations_required = observations_required
+
+    def handle(self, events):
+        """
+        For each event to be processed, insert its value into a by-location dictionary. If
+        enough observations have been seen, then produce the averages.
+        """
+        for event in events:
+            self.observations += 1
+            self.averages[event.location_id].add_observation(event.value)
+
+            if self.observations >= self.observations_required:
+                self.observations = 0
+                for (location_id, average) in self.averages.items():
+                    logger.info(f'Average value at location {location_id} is {average.average}')
+
+
+class ChronologicalAverageBucket(namedtuple('ChronologicalAverageBucket', 'start end values')):
     """
     A bucket that stores values of events occurring within a certain window of time.
     """
@@ -118,10 +148,28 @@ class AverageBucket(namedtuple('AverageBucket', 'start end values')):
         start_datetime = datetime.fromtimestamp(self.start / 1000)
         end_datetime = datetime.fromtimestamp(self.end / 1000)
         average_value = (sum(self.values) / len(self.values)) if self.values else 0
-        return Average(start=start_datetime, end=end_datetime, value=average_value)
+        return ChronologicalAverage(start=start_datetime, end=end_datetime, value=average_value)
 
 
-class Average(namedtuple('Average', 'start end value')):
+class ChronologicalAverage(namedtuple('ChronologicalAverage', 'start end value')):
     """
     A record of the average value of events between two timestamps.
     """
+
+
+class LocationAverage:
+    """
+    A record of the average value of events at a particular location.
+    """
+
+    def __init__(self):
+        self.total_value = 0
+        self.observations = 0
+
+    def add_observation(self, value):
+        self.total_value += value
+        self.observations += 1
+
+    @property
+    def average(self):
+        return 0 if self.observations == 0 else (self.total_value / self.observations)

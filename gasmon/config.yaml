@@ -5,14 +5,18 @@ aws:
 
 locations:
     s3_bucket: samcap-07-2019-gasmon-locationss3bucket-14b07twikku90
-    s3_key: locations.json
+    s3_key: locations-part2.json
 
 deduplicator:
     cache_time_to_live_seconds: 300
 
-averager:
+chronological_averager:
     average_period_seconds: 60
     expiry_time_seconds: 300
 
+location_averager:
+    observations_required: 10000
+
 receiver:
-    sns_topic_arn: arn:aws:sns:eu-west-1:552908040772:samcap-07-2019-gasmon-snsTopicSensorDataPart1-15WY99JMOTFSY
+    sns_topic_arn: arn:aws:sns:eu-west-1:552908040772:samcap-07-2019-gasmon-snsTopicSensorDataPart2-RH904EAMCDRY
+    num_threads: 5

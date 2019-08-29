@@ -5,7 +5,9 @@ A module that handles subscribing an SQS queue to an SNS topic and receiving eve
 from collections import namedtuple
 import json
 import logging
+from queue import Empty, Queue
 import re
+import threading
 import uuid
 
 import boto3
@@ -96,26 +98,26 @@ class QueueSubscription:
 
         return json.dumps(policy_document)
 
-class Receiver:
+
+class SQSEventReceiver:
     """
-    A class that uses a QueueSubscription to produce a stream of events by listening to messages on the queue.
+    A class that retrieves events from SQS, designed to have multiple copies run 
+    concurrently in worker threads.
     """
 
     def __init__(self, queue_subscription):
         """
-        Create a Receiver that will use the given QueueSubscription
+        Create an SQSEventReceiver that will use the given QueueSubscription
         """
-
         aws_region = config['aws']['region_name']
-        self.sqs_client = boto3.client('sqs', region_name=aws_region)
+        self.sqs_client = boto3.session.Session().client('sqs', region_name=aws_region)
         self.queue_subscription = queue_subscription
 
     def get_events(self):
         """
-        Generate events by reading from the QueueSubscription
+        Get events by reading from the QueueSubscription
         """
-        while True:
-            yield from filter(None.__ne__, map(Receiver._convert_message, self._get_messages()))
+        return [event for event in map(SQSEventReceiver._convert_message, self._get_messages()) if event is not None]
 
     @staticmethod
     def _convert_message(message):
@@ -162,3 +164,71 @@ class Receiver:
 
             # Report on the number of successful deletions
             logger.debug(f'Successfully deleted {len(delete_result.get("Successful", []))} of {len(messages)} messages')
+
+
+class ReceiverThread(threading.Thread):
+    """
+    A single worker thread working to receive messages from SQS.
+    """
+    
+    def __init__(self, queue_subscription, event_queue, stop_signal):
+        """
+        Create a worker thread that will receive events using the given queue
+        subscription, put them onto the event_queue for processing, and continue 
+        processing until it receives a stop signal.
+        """
+        super().__init__()
+        self.event_queue = event_queue
+        self.stop_signal = stop_signal
+        self.event_receiver = SQSEventReceiver(queue_subscription)
+
+    def run(self):
+        """
+        Repeatedly pull messages from SQS and push them onto the event queue.
+        """
+        while True:
+            if self.stop_signal.is_set():
+                break
+            for event in self.event_receiver.get_events():
+                self.event_queue.put(event)
+
+
+class Receiver:
+    """
+    A class that runs multiple SQSEventReceiver workers concurrently to
+    receive events from SQS.
+    """
+
+    def __init__(self, queue_subscription, num_threads):
+        """
+        Create a Receiver that will use the given number of worker threads
+        """
+        self.event_queue = Queue()
+        self.stop_signal = threading.Event()
+        self.threads = [ReceiverThread(queue_subscription, self.event_queue, self.stop_signal)]
+
+    def __enter__(self):
+        """
+        Start each of the worker threads.
+        """
+        for thread in self.threads:
+            thread.start()
+        return self
+
+    def __exit__(self, *args):
+        """
+        Signal to each worker thread that it should stop processing.
+        """
+        self.stop_signal.set()
+        for thread in self.threads:
+            thread.join()
+
+    def get_events(self):
+        """
+        Generate events by polling the queue that each worker thread is publishing to.
+        """
+        while True:
+            try:
+                yield self.event_queue.get(timeout=1)
+            except Empty:
+                pass

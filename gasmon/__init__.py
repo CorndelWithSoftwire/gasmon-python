@@ -10,7 +10,7 @@ from gasmon.configuration import config
 from gasmon.locations import get_locations
 from gasmon.pipeline import FixedDurationSource, LocationFilter, Deduplicator
 from gasmon.receiver import QueueSubscription, Receiver
-from gasmon.sink  import Averager
+from gasmon.sink  import ChronologicalAverager, LocationAverager, Sink
 
 root_logger = logging.getLogger()
 log_formatter = logging.Formatter('%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s')
@@ -43,18 +43,22 @@ def main():
     pipeline = fixed_duration_source.compose(location_filter).compose(deduplicator)
 
     # Create the sink that will handle the events that come through the pipeline
-    averager = Averager(int(config['averager']['average_period_seconds']), int(config['averager']['expiry_time_seconds']))
+    chronological_averager = ChronologicalAverager(int(config['chronological_averager']['average_period_seconds']), int(config['chronological_averager']['expiry_time_seconds']))
+    location_averager = LocationAverager(int(config['location_averager']['observations_required']))
+    sink = Sink.parallel(chronological_averager, location_averager)
 
     # Create an SQS queue that will be subscribed to the SNS topic
     sns_topic_arn = config['receiver']['sns_topic_arn']
+    num_threads = int(config['receiver']['num_threads'])
+    
     with QueueSubscription(sns_topic_arn) as queue_subscription:
+        with Receiver(queue_subscription, num_threads) as receiver:
 
-        # Process events as they come in from the queue
-        receiver = Receiver(queue_subscription)
-        pipeline.sink(averager).handle(receiver.get_events())
+            # Process events as they come in from the queue
+            pipeline.sink(sink).handle(receiver.get_events())
 
-        # Show final stats
-        print(f'Processed {fixed_duration_source.events_processed} events in {run_time_seconds} seconds')
-        print(f'Events/s: {fixed_duration_source.events_processed / run_time_seconds:.2f}')
-        print(f'Invalid locations skipped: {location_filter.invalid_events_filtered}')
-        print(f'Duplicated events skipped: {deduplicator.duplicate_events_ignored}')
+            # Show final stats
+            print(f'Processed {fixed_duration_source.events_processed} events in {run_time_seconds} seconds')
+            print(f'Events/s: {fixed_duration_source.events_processed / run_time_seconds:.2f}')
+            print(f'Invalid locations skipped: {location_filter.invalid_events_filtered}')
+            print(f'Duplicated events skipped: {deduplicator.duplicate_events_ignored}')
