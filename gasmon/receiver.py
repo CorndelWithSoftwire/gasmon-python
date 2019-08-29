@@ -128,7 +128,7 @@ class Receiver:
             json_message_body = json.loads(unescaped_message_body)
             return Event(location_id=json_message_body['locationId'], event_id=json_message_body['eventId'], value=json_message_body['value'], timestamp=json_message_body['timestamp'])
         except Exception as e:
-            logger.warning(f'Skipping invalid message {message}', e)
+            logger.warning(f'Skipping invalid message {message} - {e}')
             return None
 
     def _get_messages(self):
