@@ -4,7 +4,6 @@ A module consisting of pipeline steps that processed events will pass through.
 
 from abc import ABC, abstractmethod
 from collections import deque, namedtuple
-from datetime import datetime
 import logging
 from time import time
 
@@ -29,6 +28,12 @@ class Pipeline(ABC):
         """
         return ComposedPipeline(self, other)
 
+    def sink(self, sink):
+        """
+        Funnel events from this Pipeline into the given sink.
+        """
+        return PipelineWithSink(self, sink)
+
 
 class ComposedPipeline(Pipeline):
     """
@@ -47,6 +52,26 @@ class ComposedPipeline(Pipeline):
         Handle the given event by having it be handled by the two pipelines in turn.
         """
         return self.second.handle(self.first.handle(events))
+
+
+class PipelineWithSink(Pipeline):
+    """
+    A Pipeline with a final processing step (a Sink).
+    """
+
+    def __init__(self, pipeline, sink):
+        """
+        Create a Pipeline with a Sink.
+        """
+        self.pipeline = pipeline
+        self.sink = sink
+
+    def handle(self, events):
+        """
+        Handle events by first letting the pipeline process them, then 
+        passing the result to the sink
+        """
+        self.sink.handle(self.pipeline.handle(events))
 
 
 class FixedDurationSource(Pipeline):
@@ -143,84 +168,7 @@ class Deduplicator(Pipeline):
                 yield event
 
 
-class Averager(Pipeline):
-    """
-    A Pipeline step that produces a moving average of events in a given window.
-    """
-
-    def __init__(self, average_period_seconds, expiry_time_seconds):
-        """
-        Create an Averager which will calculate a moving average over windows of width
-        `average_period_seconds`, under the assumption that events may arrive up to
-        `expiry_time_seconds` late.
-        """
-
-        # Store configuration values
-        self.average_period_millis = 1000 * average_period_seconds
-        self.expiry_time_millis = 1000 * expiry_time_seconds
-
-        # Create buckets for calculating the moving averages
-        current_time_millis = 1000 * time()
-        self.buckets = deque([AverageBucket(start=(current_time_millis - self.expiry_time_millis), end=(current_time_millis - self.expiry_time_millis + self.average_period_millis), values=[])])
-
-    def handle(self, events):
-        """
-        For each event to be processed, add its value to an appropriate bucket. If any bucket
-        has expired, then yield its average and remove it from consideration.
-        """
-        for event in events:
-            self.add_to_bucket(event)
-            expired_bucket = self.maybe_expire_first_bucket_and_get_average()
-            if expired_bucket is not None:
-                logger.info(f'Average value for {expired_bucket.start} to {expired_bucket.end} is {expired_bucket.average}')
-                yield expired_bucket.average
-
-    def add_to_bucket(self, event):
-        """
-        Find the bucket that the given event belongs in, and place it there.
-        """
-
-        # Check if the event is old and should be ignored
-        if self.buckets[0].start > event.timestamp:
-            logger.debug(f'Not averaging old event at timestamp {event.timestamp}')
-            return
-
-        # Check if we need to add any new buckets to deal with this event
-        while self.buckets[-1].end < event.timestamp:
-            current_last_start, current_last_end = self.buckets[-1].start, self.buckets[-1].end
-            logger.debug(f'Adding new bucket to deal with event at timestamp {event.timestamp} (Current last bucket is {current_last_start} to {current_last_end})')
-            self.buckets.append(AverageBucket(start=current_last_end, end=(current_last_end + self.average_period_millis), values=[]))
-
-        # Find the right bucket and add the event value
-        bucket_index = int(event.timestamp - self.buckets[0].start) // self.average_period_millis
-        self.buckets[bucket_index].values.append(event.value)
-
-    def maybe_expire_first_bucket_and_get_average(self):
-        current_time_millis = 1000 * time()
-        if current_time_millis - self.expiry_time_millis > self.buckets[0].end:
-            return self.buckets.popleft()
-
-
 class DeduplicationRecord(namedtuple('DeduplicationRecord', 'expiry id')):
     """
     A record that is used to keep track of when IDs should be removed from the deduplication cache.
-    """
-
-
-class AverageBucket(namedtuple('AverageBucket', 'start end values')):
-    """
-    A bucket that stores values of events occurring within a certain window of time.
-    """
-
-    @property
-    def average(self):
-        start_datetime = datetime.fromtimestamp(self.start / 1000)
-        end_datetime = datetime.fromtimestamp(self.end / 1000)
-        average_value = (sum(self.values) / len(self.values)) if self.values else 0
-        return Average(start=start_datetime, end=end_datetime, value=average_value)
-
-
-class Average(namedtuple('Average', 'start end value')):
-    """
-    A record of the average value of events between two timestamps.
     """
