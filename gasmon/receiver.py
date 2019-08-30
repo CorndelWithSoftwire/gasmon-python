@@ -205,7 +205,7 @@ class Receiver:
         """
         self.event_queue = Queue()
         self.stop_signal = threading.Event()
-        self.threads = [ReceiverThread(queue_subscription, self.event_queue, self.stop_signal)]
+        self.threads = [ReceiverThread(queue_subscription, self.event_queue, self.stop_signal) for _ in range(num_threads)]
 
     def __enter__(self):
         """
